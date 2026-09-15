@@ -1454,9 +1454,17 @@ class TestTerminateHostPidWindows:
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
 
 class TestTerminateHostPidPosix:
-    """POSIX branch walks the tree via psutil and SIGTERMs children first."""
+    """POSIX branch SIGTERMs the parent alone and lets it reap its own tree."""
 
-    def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
+    def test_posix_terminates_parent_alone_and_spares_live_children(self, monkeypatch):
+        """Only the parent may be signalled while it is still alive.
+
+        Regression: SIGTERMing descendants out from under a live parent breaks any app
+        that manages its own process tree. Chromium/Electron forks every child from a
+        zygote, so a dead zygote means no child can ever be launched again — the browser
+        burns its GPU fallback ladder and calls IMMEDIATE_CRASH(), turning a routine
+        shutdown into a SIGTRAP core dump instead of a clean exit 0.
+        """
         from tools import process_registry as pr
         import psutil
 
@@ -1481,17 +1489,63 @@ class TestTerminateHostPidPosix:
                 terminate_order.append(self.pid)
 
         monkeypatch.setattr(psutil, "Process", _FakeParent)
-        # This test covers only the SIGTERM tree-walk ordering; disable the
-        # SIGKILL-escalation step (which would call psutil.wait_procs on the
-        # fakes) by setting the grace to 0.
+        # This test covers only the initial signal; disable the grace/sweep step
+        # (which would probe liveness on the fakes) by setting the grace to 0.
         monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.0))
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
-        assert terminate_order == [101, 102, 103, 12345], (
-            "Children must be terminated before the parent"
+        assert terminate_order == [12345], (
+            "Only the parent may be signalled; it tears down its own children"
         )
+
+    def test_posix_sweeps_children_the_parent_failed_to_reap(self, monkeypatch):
+        """The anti-orphan guarantee survives the reordering.
+
+        Descendants are snapshotted BEFORE the parent is signalled, so children left
+        behind by a parent that exits without reaping them are still SIGTERMed and then
+        SIGKILLed rather than leaking.
+        """
+        from tools import process_registry as pr
+        import psutil
+
+        terminated, killed = [], []
+
+        class _FakeProc:
+            def __init__(self, pid):
+                self.pid = pid
+                self.alive = True
+
+            def terminate(self):
+                terminated.append(self.pid)
+
+            def kill(self):
+                killed.append(self.pid)
+                self.alive = False
+
+        kids = [_FakeProc(101), _FakeProc(102)]
+
+        class _FakeParent(_FakeProc):
+            def children(self, recursive=False):
+                assert recursive is True
+                return list(kids)
+
+            def terminate(self):
+                terminated.append(self.pid)
+                self.alive = False  # parent exits, orphaning its children
+
+        monkeypatch.setattr(psutil, "Process", _FakeParent)
+        monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 0.1))
+        monkeypatch.setattr(pr.ProcessRegistry, "_proc_alive",
+                            staticmethod(lambda proc: proc.alive))
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert terminated[0] == 12345, "the parent is signalled first, and alone"
+        assert sorted(terminated[1:]) == [101, 102], "orphans are swept with SIGTERM"
+        assert sorted(killed) == [101, 102], "orphans ignoring SIGTERM are SIGKILLed"
 
     def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
         from tools import process_registry as pr

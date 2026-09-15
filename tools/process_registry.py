@@ -796,11 +796,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
-        it — a leaked orphan beats tree-killing someone's browser. POSIX: psutil SIGTERMs
-        children before the parent (so trees aren't reparented to init and survive), then
-        SIGKILLs survivors after ``terminal.daemon_term_grace_seconds``. Windows:
-        ``taskkill /T /F`` (psutil's stale PPID links miss orphans there); ``os.kill``
-        is the fallback."""
+        it — a leaked orphan beats tree-killing someone's browser. POSIX: snapshot the
+        tree, SIGTERM the PARENT ALONE and let it tear down its own children, then sweep
+        whatever it failed to reap and SIGKILL survivors, bounded by
+        ``terminal.daemon_term_grace_seconds``. Windows: ``taskkill /T /F`` (psutil's
+        stale PPID links miss orphans there); ``os.kill`` is the fallback."""
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
             logger.warning(
                 "Refusing to terminate host pid %d: start-time mismatch — "
@@ -828,31 +828,49 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except (OSError, PermissionError):
             _sigterm_quietly()
             return
-        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        # Snapshot the whole tree BEFORE signalling anything, so a parent that exits
+        # without reaping its children still leaves us a list to sweep below.
         try:
-            targets = parent.children(recursive=True)
+            descendants = parent.children(recursive=True)
         except gone:
-            targets = []
-        targets.append(parent)
-        for proc in targets:
-            with suppress(gone):
-                proc.terminate()
-        # Escalate to SIGKILL for anything that ignored SIGTERM within the grace window.
-        # ``psutil.wait_procs``' gone/alive partition is deliberately NOT trusted: it
-        # reaps via ``Process.wait()`` and mis-partitions across zombie transitions in a
-        # parent/child tree, leaving survivors un-killed. Re-probing every target is
-        # deterministic.
+            descendants = []
+        targets = descendants + [parent]
+        # SIGTERM the PARENT ALONE and let it tear down its own children. Killing
+        # descendants out from under a live parent breaks any app that manages its own
+        # process tree: Chromium/Electron forks every child from a zygote, so a dead
+        # zygote means no child can ever be launched again — the browser burns its GPU
+        # fallback ladder and calls IMMEDIATE_CRASH(), turning a routine shutdown into a
+        # SIGTRAP core dump. Its SIGTERM handler is async and takes seconds, so the
+        # synchronous FATAL always wins that race.
+        with suppress(gone):
+            parent.terminate()
+        # Escalate for anything still alive after the grace window. ``psutil.wait_procs``'
+        # gone/alive partition is deliberately NOT trusted: it reaps via ``Process.wait()``
+        # and mis-partitions across zombie transitions in a parent/child tree, leaving
+        # survivors un-killed. Re-probing every target is deterministic.
         grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
             return
         deadline = time.monotonic() + grace
         while time.monotonic() < deadline and any(cls._proc_alive(_p) for _p in targets):
             time.sleep(0.05)
+        # Whatever the parent failed to reap is now an orphan (reparented to init) or a
+        # child of a parent that ignored SIGTERM entirely. Either way it is safe to signal
+        # directly now — the graceful window has already elapsed. Give them a brief SIGTERM
+        # of their own before the hammer so well-behaved children still exit cleanly.
+        orphans = [_p for _p in descendants if cls._proc_alive(_p)]
+        if orphans:
+            for proc in orphans:
+                with suppress(gone):
+                    proc.terminate()
+            orphan_deadline = time.monotonic() + min(grace, 0.5)
+            while time.monotonic() < orphan_deadline and any(cls._proc_alive(_p) for _p in orphans):
+                time.sleep(0.05)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
                     proc.kill()  # SIGKILL on POSIX
-                    logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
+                    logger.info("Escalated to SIGKILL for pid %d (survived SIGTERM within %.1fs grace)", proc.pid, grace)
 
     # ----- Spawn -----
 
