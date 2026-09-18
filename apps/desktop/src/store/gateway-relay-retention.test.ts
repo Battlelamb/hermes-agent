@@ -47,6 +47,7 @@ const {
   configureGatewayRegistry,
   pruneSecondaryGateways,
   requestGatewayForAgent,
+  requestGatewayForAgentPassive,
   retainGatewayForRelay,
   setPrimaryGateway
 } = await import('./gateway')
@@ -81,6 +82,29 @@ afterEach(() => {
 })
 
 describe('bot-relay gateway retention (#93594)', () => {
+  it('parks a never-opened offline route after three passive stalled dials', async () => {
+    const getConnectionFor = vi.fn().mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'hermes:connection:for': Error: SSH operation to gaming-pc timed out. The connection may be half-open (e.g. after sleep); reconnecting."
+      )
+    )
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async () => agentConn),
+      getConnectionFor
+    }
+    const release = retainGatewayForRelay('gaming-pc', 'default')
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      await expect(
+        requestGatewayForAgentPassive('gaming-pc', 'default', 'bot_relay.outbox.drain', {})
+      ).rejects.toThrow()
+    }
+
+    expect(getConnectionFor).toHaveBeenCalledTimes(3)
+    release()
+  })
+
   it('without retention every drain tick dials a fresh socket (the churn this fix removes)', async () => {
     // Baseline: three request-leased RPCs against an otherwise-unheld route.
     for (let tick = 0; tick < 3; tick += 1) {

@@ -32,6 +32,7 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
     onEvent: vi.fn(),
     profileRoutes: vi.fn(),
     requestProfile: vi.fn(),
+    requestProfilePassive: vi.fn(),
     retainProfileSocket: vi.fn()
   } as Record<string, unknown>,
   noteBotAttentionMock: vi.fn(),
@@ -72,15 +73,16 @@ interface RelayCall {
 function respondWith(handler: (call: RelayCall) => unknown) {
   const calls: RelayCall[] = []
 
-  ;(hostMock.requestProfile as ReturnType<typeof vi.fn>).mockImplementation(
-    async (target: ProfileRoute, method: string, params: Record<string, unknown>) => {
-      const call = { connectionId: target.connectionId, method, params: structuredClone(params ?? {}) }
+  const request = async (target: ProfileRoute, method: string, params: Record<string, unknown>) => {
+    const call = { connectionId: target.connectionId, method, params: structuredClone(params ?? {}) }
 
-      calls.push(call)
+    calls.push(call)
 
-      return handler(call)
-    }
-  )
+    return handler(call)
+  }
+
+  ;(hostMock.requestProfile as ReturnType<typeof vi.fn>).mockImplementation(request)
+  ;(hostMock.requestProfilePassive as ReturnType<typeof vi.fn>).mockImplementation(request)
 
   return calls
 }
@@ -131,6 +133,7 @@ beforeEach(() => {
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
+  hostMock.requestProfilePassive = vi.fn(async () => ({}))
   hostMock.retainProfileSocket = vi.fn(() => vi.fn())
 })
 
@@ -139,6 +142,18 @@ afterEach(() => {
 })
 
 describe('push-notified drain (#93091)', () => {
+  it('uses the passive request door for periodic probes', async () => {
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(hostMock.requestProfilePassive).toHaveBeenCalled()
+    expect(hostMock.requestProfile).not.toHaveBeenCalled()
+
+    stopBotRelay()
+  })
+
   it('collapses a burst of pending signals into ONE drain', async () => {
     const calls = respondWith(() => ({ envelopes: [] }))
     const { startBotRelay, stopBotRelay } = await loadRelay()

@@ -54,6 +54,7 @@ import {
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
+  requestGatewayForAgentPassive,
   requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
@@ -249,7 +250,8 @@ async function requestPluginProfile<T>(
   method: string,
   params: Record<string, unknown>,
   timeoutMs?: number,
-  options?: PluginProfileRequestOptions
+  options?: PluginProfileRequestOptions,
+  passive = false
 ): Promise<T> {
   const spawnPriority = options?.spawnPriority
 
@@ -268,15 +270,18 @@ async function requestPluginProfile<T>(
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
+    // Omit the bound entirely when unset so callers stay on the pool default.
+    const requestAgent = passive ? requestGatewayForAgentPassive : requestGatewayForAgent
+
     if (spawnPriority) {
-      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
+      return requestAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
         spawnPriority
       })
     }
 
     return timeoutMs === undefined
-      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
-      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
+      ? requestAgent<T>(route.connectionId, route.profile, method, params)
+      : requestAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
   }
 
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
@@ -1423,6 +1428,16 @@ export const host = {
     timeoutMs?: number,
     options?: PluginProfileRequestOptions
   ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs, options),
+
+  /** Background probe that may open an untried route but never re-arms one
+   * parked after repeated stalled dials. Relay roster/drain polling uses this
+   * door; delivery and explicit plugin actions keep using requestProfile. */
+  requestProfilePassive: async <T>(
+    route: PluginProfileRoute | string,
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs?: number
+  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs, undefined, true),
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

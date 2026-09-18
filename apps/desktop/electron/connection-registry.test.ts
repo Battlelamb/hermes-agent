@@ -39,6 +39,8 @@ import {
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
+  sshInventoryRetryDelayMs,
+  SshInventoryRetryState,
   uniqueLabel,
   updateEligibility,
   upsertConnection
@@ -888,6 +890,29 @@ test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retr
   assert.equal(shouldRetrySshInventory(false, 1_000, 30_000, 60_000), false)
   assert.equal(shouldRetrySshInventory(false, 1_000, 61_000, 60_000), true)
   assert.equal(shouldRetrySshInventory(true, 1_000, 120_000, 60_000), false)
+})
+
+test('sshInventoryRetryDelayMs exponentially parks an offline SSH source with a cap', () => {
+  assert.equal(sshInventoryRetryDelayMs(0), 60_000)
+  assert.equal(sshInventoryRetryDelayMs(1), 60_000)
+  assert.equal(sshInventoryRetryDelayMs(2), 120_000)
+  assert.equal(sshInventoryRetryDelayMs(3), 240_000)
+  assert.equal(sshInventoryRetryDelayMs(99), 15 * 60_000)
+})
+
+test('SshInventoryRetryState resets backoff and ignores an older in-flight failure', () => {
+  const state = new SshInventoryRetryState()
+  const oldAttempt = state.begin('gaming-pc')
+
+  assert.equal(state.recordFailure('gaming-pc', oldAttempt), true)
+  assert.equal(state.retryDelay('gaming-pc'), 60_000)
+
+  const staleAttempt = state.begin('gaming-pc')
+  state.reset('gaming-pc')
+
+  assert.equal(state.recordFailure('gaming-pc', staleAttempt), false)
+  assert.equal(state.recordSuccess('gaming-pc', staleAttempt), false)
+  assert.equal(state.retryDelay('gaming-pc'), 60_000)
 })
 
 test('parseRemoteProfileListing: Mini/Spark dirs become roster names and drop rollbacks', () => {
