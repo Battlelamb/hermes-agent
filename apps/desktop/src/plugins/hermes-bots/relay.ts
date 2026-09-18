@@ -106,6 +106,10 @@ const relay: RelayLifecycle = {
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
 
+/** Passive polling must not wake a route that spent its stalled-dial budget.
+ * Older shells lack this door and retain the pre-fix behavior. */
+const requestProfilePassive = host.requestProfilePassive ?? host.requestProfile
+
 /** One reachable gateway plus a representative route onto it. The route comes
  *  from `host.profileRoutes()`, which carries identity only — the optional
  *  label fields are read defensively in relayAgentsOn and never arrive. */
@@ -214,7 +218,7 @@ async function relayConnections(): Promise<RelayConnection[]> {
  *  definitively offline → false runtime_offline refusals (#93091 item 2). */
 async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
+    const res = await requestProfilePassive<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
       include_sessions: false
     })
 
@@ -324,7 +328,7 @@ async function syncRelayRosters() {
         }
 
         try {
-          await host.requestProfile(connection.route, 'bot_relay.roster.sync', {
+          await requestProfilePassive(connection.route, 'bot_relay.roster.sync', {
             agents: others
           })
         } catch {
@@ -380,7 +384,7 @@ async function drainRelayOutboxes() {
 
     for (const sender of connections) {
       try {
-        const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
+        const res = await requestProfilePassive<{ envelopes?: RelayEnvelope[] }>(
           sender.route,
           'bot_relay.outbox.drain',
           {}

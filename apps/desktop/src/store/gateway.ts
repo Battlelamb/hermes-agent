@@ -779,8 +779,12 @@ function isStalledDialError(error: unknown): boolean {
   }
 
   const message = error instanceof Error ? error.message : String(error ?? '')
+  const sshMessage = message.replace(/^Error invoking remote method ['"]hermes:connection:for['"]: Error: /, '')
 
-  return message.includes('timed out while waiting for a free slot')
+  return (
+    message.includes('timed out while waiting for a free slot') ||
+    /^SSH operation to .+ timed out(?:[.:]|$)/.test(sshMessage)
+  )
 }
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
@@ -797,6 +801,28 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
   entry.wantOpen = true
   entry.stalledDials = 0
   entry.retiredByPool = false
+}
+
+/** Spend one stalled-dial credit and park at the shared ceiling. Used by both
+ * automatic reconnects and never-opened passive poll routes. */
+function recordStalledDial(entry: Secondary, error: unknown): boolean {
+  if (!isStalledDialError(error)) {
+    return false
+  }
+
+  entry.stalledDials += 1
+
+  if (entry.stalledDials < SECONDARY_STALLED_DIAL_BUDGET) {
+    return false
+  }
+
+  console.warn(
+    `[gateway] parking scope="${entry.scope}" after ${entry.stalledDials} stalled dials; the next explicit open or wake nudge redials it`
+  )
+  entry.wantOpen = false
+  entry.stalledDials = 0
+
+  return true
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -852,17 +878,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     // Only a successful open resets the stall budget (the 'open' state
     // listener): a treadmill that alternates slot-wait timeouts with a
     // spawned-but-unresponsive socket must still run out of budget.
-    if (isStalledDialError(error)) {
-      entry.stalledDials += 1
-
-      if (entry.stalledDials >= SECONDARY_STALLED_DIAL_BUDGET) {
-        console.warn(
-          `[gateway] parking scope="${entry.scope}" after ${entry.stalledDials} stalled dials; the next open or wake nudge redials it`
-        )
-        entry.wantOpen = false
-        entry.stalledDials = 0
-      }
-    }
+    recordStalledDial(entry, error)
     // Still wantOpen → fall through to the backoff below.
   } finally {
     entry.reconnecting = false
@@ -1127,7 +1143,10 @@ export async function requestGatewayForAgent<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  {
+    spawnPriority = 'background',
+    rearmParked = true
+  }: { spawnPriority?: SpawnPriority; rearmParked?: boolean } = {}
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
@@ -1167,12 +1186,25 @@ export async function requestGatewayForAgent<T>(
     entry.retained = true
   }
 
-  rearmSecondary(entry, spawnPriority)
+  if (rearmParked) {
+    rearmSecondary(entry, spawnPriority)
+  } else if (!entry.wantOpen) {
+    throw new Error(`Gateway route "${scope}" is parked after repeated stalled dials`)
+  }
+
   entry.activeRequests += 1
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry, spawnPriority)
+      try {
+        await openSecondary(entry, spawnPriority)
+      } catch (error) {
+        if (!rearmParked) {
+          recordStalledDial(entry, error)
+        }
+
+        throw error
+      }
     }
 
     return await (timeoutMs === undefined && signal === undefined
@@ -1196,6 +1228,25 @@ export async function requestGatewayForAgent<T>(
       }
     }
   }
+}
+
+/** Passive background poll through a registry source. Unlike an explicit
+ * request, this may open a live/untried route but never wakes one that spent
+ * its stalled-dial budget. Periodic roster/drain loops therefore cannot turn
+ * a parked offline SSH machine back into a process treadmill. */
+export function requestGatewayForAgentPassive<T>(
+  connectionId: null | string,
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+): Promise<T> {
+  return requestGatewayForAgent<T>(connectionId, profile, method, params, timeoutMs, signal, {
+    spawnPriority,
+    rearmParked: false
+  })
 }
 
 // ── Bot-relay socket retention (#93594) ─────────────────────────────────────

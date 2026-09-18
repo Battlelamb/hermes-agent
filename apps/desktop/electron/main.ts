@@ -158,6 +158,7 @@ import {
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
+  SshInventoryRetryState,
   updateEligibility,
   upsertConnection
 } from './connection-registry'
@@ -15448,6 +15449,9 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
   // The ssh probe path in testDesktopConnectionConfig never consults v1
   // connection state, so mapping the entry onto it is safe.
   if (entry.kind === 'ssh') {
+    sshInventoryAttemptedAt.delete(entry.id)
+    sshInventoryRetryState.reset(entry.id)
+
     const result = await testDesktopConnectionConfig({
       mode: 'ssh',
       sshHost: entry.host,
@@ -15459,6 +15463,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 
     if (result?.reachable) {
       sshInventoryAttemptedAt.delete(entry.id)
+      sshInventoryRetryState.reset(entry.id)
       sshRosterCache.delete(entry.id)
       await probeSshProfileInventory(entry)
     }
@@ -15535,6 +15540,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // lists are reused so switching the window back to local does not empty Bot Mode.
 const sshRosterCache = new Map<string, string[]>()
 const sshInventoryAttemptedAt = new Map<string, number>()
+const sshInventoryRetryState = new SshInventoryRetryState()
 const SSH_INVENTORY_RETRY_MS = 60_000
 
 // Stable backend identity per registered connection: the `install_id` its
@@ -15586,13 +15592,14 @@ async function probeSshProfileInventory(connection) {
       sshRosterCache.has(connection.id),
       sshInventoryAttemptedAt.get(connection.id),
       Date.now(),
-      SSH_INVENTORY_RETRY_MS
+      sshInventoryRetryState.retryDelay(connection.id, SSH_INVENTORY_RETRY_MS)
     )
   ) {
     return
   }
 
   sshInventoryAttemptedAt.set(connection.id, Date.now())
+  const attemptGeneration = sshInventoryRetryState.begin(connection.id)
 
   const sshConfig = normalizeSshConfig({
     mode: 'ssh',
@@ -15615,11 +15622,13 @@ async function probeSshProfileInventory(connection) {
   try {
     await ssh.open()
     const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const current = sshInventoryRetryState.recordSuccess(connection.id, attemptGeneration)
 
-    if (profiles.length > 0) {
+    if (current && profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
     }
   } catch (error: any) {
+    sshInventoryRetryState.recordFailure(connection.id, attemptGeneration)
     sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
   } finally {
     try {

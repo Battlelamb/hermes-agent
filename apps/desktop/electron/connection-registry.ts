@@ -610,6 +610,60 @@ export function rememberSshEnumeration(
   return enumeration
 }
 
+/** Increase the cooldown after consecutive SSH inventory failures. A registered
+ * offline machine stays discoverable and is still retried, but it cannot keep
+ * launching a new SSH process every roster poll forever. */
+export function sshInventoryRetryDelayMs(
+  consecutiveFailures: number,
+  baseMs = 60_000,
+  capMs = 15 * 60_000
+): number {
+  const exponent = Math.max(0, Math.min(30, Math.floor(consecutiveFailures) - 1))
+
+  return Math.min(capMs, baseMs * 2 ** exponent)
+}
+
+export class SshInventoryRetryState {
+  readonly #failures = new Map<string, number>()
+  readonly #generations = new Map<string, number>()
+
+  begin(connectionId: string): number {
+    const generation = (this.#generations.get(connectionId) || 0) + 1
+    this.#generations.set(connectionId, generation)
+
+    return generation
+  }
+
+  reset(connectionId: string): void {
+    this.begin(connectionId)
+    this.#failures.delete(connectionId)
+  }
+
+  recordFailure(connectionId: string, generation: number): boolean {
+    if (this.#generations.get(connectionId) !== generation) {
+      return false
+    }
+
+    this.#failures.set(connectionId, (this.#failures.get(connectionId) || 0) + 1)
+
+    return true
+  }
+
+  recordSuccess(connectionId: string, generation: number): boolean {
+    if (this.#generations.get(connectionId) !== generation) {
+      return false
+    }
+
+    this.#failures.delete(connectionId)
+
+    return true
+  }
+
+  retryDelay(connectionId: string, baseMs = 60_000, capMs = 15 * 60_000): number {
+    return sshInventoryRetryDelayMs(this.#failures.get(connectionId) || 0, baseMs, capMs)
+  }
+}
+
 /** Whether an undialed SSH source should be inventoried again. Cached
  *  successes never retry. Failures retry after `retryAfterMs` so a cold box
  *  does not stay seeded as `default` until the user hits Test. */

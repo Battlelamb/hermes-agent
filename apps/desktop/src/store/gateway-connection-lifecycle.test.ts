@@ -66,6 +66,7 @@ const {
   parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  requestGatewayForAgentPassive,
   retainGatewayForAgent,
   retireLocalProfileGateways,
   setPrimaryGateway
@@ -608,6 +609,42 @@ describe('secondary stalled-dial budget', () => {
     getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
     await ensureGatewayForAgent('homelab', 'bot-a')
     expect(getConnectionFor.mock.calls.length).toBe(dialsAfterParking + 1)
+  })
+
+  it('parks an offline SSH source after repeated connect timeouts', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('gaming-pc', 'default'))
+      .mockRejectedValue(
+        new Error(
+          "Error invoking remote method 'hermes:connection:for': Error: SSH operation to gaming-pc timed out. The connection may be half-open."
+        )
+      )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('gaming-pc', 'default')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    expect(getConnectionFor.mock.calls.length).toBe(4)
+
+    // Passive bot-relay roster/drain ticks must not re-arm a parked route.
+    for (let tick = 0; tick < 5; tick += 1) {
+      await expect(
+        requestGatewayForAgentPassive('gaming-pc', 'default', 'bot_relay.outbox.drain', {})
+      ).rejects.toThrow('parked')
+    }
+
+    expect(getConnectionFor.mock.calls.length).toBe(4)
   })
 
   it('does not let an interleaved fast failure refill the stall budget', async () => {
