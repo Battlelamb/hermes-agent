@@ -631,6 +631,8 @@ export interface ProfileRouteOptions {
   ownEntry?: boolean
   /** `HERMES_DESKTOP_ISOLATED_BACKEND=1`: opt out of the host singleton. */
   isolatedBackend?: boolean
+  /** The profile's own config sets `gateway.standalone: true`: the host backend does not serve it. */
+  standaloneProfile?: boolean
   requestMethod?: null | string
   requestPath?: null | string
 }
@@ -895,6 +897,12 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
     // A stored local profile must not be redirected into the remote primary,
     // even when its REST endpoint supports profile scoping.
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+
+  // A standalone profile owns its own gateway; the host backend rejects its tickets and
+  // `?profile=` scope, so cases 5 and 6 must never fold it onto the shared primary.
+  if (opts.standaloneProfile) {
     return { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 

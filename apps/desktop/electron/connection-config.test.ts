@@ -556,6 +556,31 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
+    name: 'a standalone local profile keeps its own pooled backend, never the shared primary',
+    profile: 'adil',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      standaloneProfile: true,
+      requestMethod: 'GET',
+      requestPath: '/api/sessions/abc'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a standalone profile that IS the primary still owns the primary backend',
+    profile: 'adil',
+    opts: { primaryProfile: 'adil', globalRemote: false, profileRemoteOverride: false, standaloneProfile: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a non-standalone local profile still shares the host backend (unchanged)',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false, standaloneProfile: false },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
     name: 'HERMES_DESKTOP_ISOLATED_BACKEND keeps a local profile on its own pooled backend',
     profile: 'coder',
     opts: {

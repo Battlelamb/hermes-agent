@@ -41,6 +41,7 @@ import {
   systemPreferences
 } from 'electron'
 import type { Session } from 'electron'
+import { parse as parseYaml } from 'yaml'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
@@ -10518,6 +10519,20 @@ function primaryProfileKey() {
   return primaryProfilePin.resolve(readActiveDesktopProfile)
 }
 
+// `gateway.standalone: true` in a named profile's own config.yaml (mirrors hermes_cli.profiles.profile_is_standalone;
+// the default profile is the host and is never standalone). Unreadable config means not standalone.
+function isStandaloneLocalProfile(profileKey: string): boolean {
+  if (!profileKey || profileKey === 'default') {return false}
+
+  try {
+    const cfg = parseYaml(fs.readFileSync(path.join(HERMES_HOME, 'profiles', profileKey, 'config.yaml'), 'utf8'))
+
+    return cfg?.gateway?.standalone === true
+  } catch {
+    return false
+  }
+}
+
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(
   profile: string | null | undefined,
@@ -10536,6 +10551,7 @@ function profileRouteOptions(
     globalRemote: globalRemoteActive(),
     primaryProfile: primaryProfileKey(),
     profileRemoteOverride: Boolean(urlOverride || sshOverride),
+    standaloneProfile: isStandaloneLocalProfile(key),
     // The primary profile's own backend resolves to a remote host (its
     // per-profile override, env, or global). Unknown sub-profiles on that
     // gateway must route THROUGH it, not spawn local backends (#88296).
