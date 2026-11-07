@@ -1,0 +1,77 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index e897064d278d..1e8b4a6d33e3 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -166,7 +166,13 @@ dependencies = [
+ [project.optional-dependencies]
+ # Native Anthropic provider — only needed when provider=anthropic (not via
+ # OpenRouter or other aggregators).
+-anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
++# 0.120.2 is the newest release the `exclude-newer = "14 days"` cutoff below can
++# resolve; 0.121.0+ are inside the window. Staying under 0.122.0 is also
++# deliberate: it silences the pydantic serializer warning that
++# tests/agent/test_pydantic_dump_warning_leak.py's canary asserts is still
++# emitted, and drops the private `_models.add_request_id` /
++# `lib.streaming._messages.NOT_GIVEN` symbols that same test imports.
++anthropic = ["anthropic==0.120.2"]  # floor: CVE-2026-34450, CVE-2026-34452
+ # Web search backends — each only loaded when the user picks it as their
+ # search provider (configured via `hermes tools` or config.yaml).
+ exa = ["exa-py==2.10.2"]
+diff --git a/tools/lazy_deps.py b/tools/lazy_deps.py
+index 3887d3a2575c..c50e4e39cae8 100644
+--- a/tools/lazy_deps.py
++++ b/tools/lazy_deps.py
+@@ -98,7 +98,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
+     # ─── Inference providers ───────────────────────────────────────────────
+     # Native Anthropic SDK — needed when provider=anthropic (not via
+     # OpenRouter / aggregators which use the openai SDK).
+-    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
++    # Keep in lockstep with the pyproject `anthropic` extra (see the pin
++    # rationale there); test_pyproject_pins_match_lazy_deps_pins enforces it.
++    "provider.anthropic": ("anthropic==0.120.2",),  # floor: CVE-2026-34450, CVE-2026-34452
+     # AWS Bedrock provider
+     "provider.bedrock": ("boto3==1.42.89",),
+     # Google Vertex AI provider — OAuth2 token minting for the Gemini
+diff --git a/uv.lock b/uv.lock
+index 4c160fe6cb6b..4436b4811210 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -8,7 +8,7 @@ resolution-markers = [
+ ]
+ 
+ [options]
+-exclude-newer = "2026-08-04T07:06:16.774262776Z"
++exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+ exclude-newer-span = "P14D"
+ 
+ [options.exclude-newer-package]
+@@ -337,7 +337,7 @@ wheels = [
+ 
+ [[package]]
+ name = "anthropic"
+-version = "0.87.0"
++version = "0.120.2"
+ source = { registry = "https://pypi.org/simple" }
+ dependencies = [
+     { name = "anyio" },
+@@ -349,9 +349,9 @@ dependencies = [
+     { name = "sniffio" },
+     { name = "typing-extensions" },
+ ]
+-sdist = { url = "https://files.pythonhosted.org/packages/d6/8f/3281edf7c35cbac169810e5388eb9b38678c7ea9867c2d331237bd5dff08/anthropic-0.87.0.tar.gz", hash = "sha256:098fef3753cdd3c0daa86f95efb9c8d03a798d45c5170329525bb4653f6702d0", size = 588982, upload-time = "2026-03-31T17:52:41.697Z" }
++sdist = { url = "https://files.pythonhosted.org/packages/d7/10/4ca013cb166f226bd89e0aeb0fcaff94f45ddf716d4925ce89475d3c587b/anthropic-0.120.2.tar.gz", hash = "sha256:9722efc10c27a30a69f5338ddacdb35bc6a64297a4e4ba729bf83af873d5fb3a", size = 1008421, upload-time = "2026-07-28T17:38:26.986Z" }
+ wheels = [
+-    { url = "https://files.pythonhosted.org/packages/0d/02/99bf351933bdea0545a2b6e2d812ed878899e9a95f618351dfa3d0de0e69/anthropic-0.87.0-py3-none-any.whl", hash = "sha256:e2669b86d42c739d3df163f873c51719552e263a3d85179297180fb4fa00a236", size = 472126, upload-time = "2026-03-31T17:52:40.174Z" },
++    { url = "https://files.pythonhosted.org/packages/63/af/0f5db57b9397a0f3b7fc204cbef143401a7cadaf982330f97f1ce3d39f34/anthropic-0.120.2-py3-none-any.whl", hash = "sha256:0f0bc2b381dc0eb41c8d886b815d79c2041cd2374f83aed36f574b6dc9c579c1", size = 1022851, upload-time = "2026-07-28T17:38:25.466Z" },
+ ]
+ 
+ [[package]]
+@@ -1821,7 +1821,7 @@ requires-dist = [
+     { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
+     { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },
+     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
+-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
++    { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.120.2" },
+     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
+     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
+     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
